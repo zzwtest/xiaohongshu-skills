@@ -168,7 +168,7 @@ def _qrcode_fallback(browser, page, args: argparse.Namespace) -> None:
     image_url, login_url = make_qrcode_url(png_bytes)
     _open_file_if_display(qrcode_path)
 
-    result: dict = {
+    result: dict = { 
         "logged_in": False,
         "login_method": "qrcode",
         "qrcode_path": qrcode_path,
@@ -371,7 +371,7 @@ def cmd_list_feeds(args: argparse.Namespace) -> None:
 
     browser, page = _connect(args)
     try:
-        feeds = list_feeds(page)
+        feeds = list_feeds(page, skip_navigate=args.skip_navigate)
         _output({"feeds": [f.to_dict() for f in feeds], "count": len(feeds)})
     finally:
         browser.close()
@@ -731,6 +731,72 @@ def cmd_diagnose_404(args: argparse.Namespace) -> None:
         browser.close()
 
 
+def cmd_debug_test(args: argparse.Namespace) -> None:
+    """调试测试：元素查询、JS 执行、截图等。"""
+    browser, page = _connect(args)
+    try:
+        action = args.action
+
+        if action in ("element-exists", "has-element"):
+            exists = page.has_element(args.selector)
+            _output({"action": action, "selector": args.selector, "exists": exists})
+
+        elif action == "get-text":
+            text = page.get_element_text(args.selector)
+            _output({"action": action, "selector": args.selector, "text": text})
+
+        elif action == "get-attribute":
+            if not args.attr:
+                _output({"error": "get-attribute 需要 --attr 参数"}, exit_code=2)
+            value = page.get_element_attribute(args.selector, args.attr)
+            _output({
+                "action": action,
+                "selector": args.selector,
+                "attribute": args.attr,
+                "value": value,
+            })
+
+        elif action == "count":
+            count = page.get_elements_count(args.selector)
+            _output({"action": action, "selector": args.selector, "count": count})
+
+        elif action == "click":
+            page.click_element(args.selector)
+            _output({"action": action, "selector": args.selector, "clicked": True})
+
+        elif action == "evaluate":
+            if not args.js:
+                _output({"error": "evaluate 需要 --js 参数"}, exit_code=2)
+            result = page.evaluate(args.js)
+            _output({"action": action, "expression": args.js, "result": result})
+
+        elif action == "screenshot":
+            if not args.output:
+                _output({"error": "screenshot 需要 --output 参数"}, exit_code=2)
+            data = page.screenshot_element(args.selector, padding=args.padding)
+            if not data:
+                _output({"error": f"截图失败: 元素 {args.selector} 未找到或不可见"}, exit_code=2)
+            with open(args.output, "wb") as f:
+                f.write(data)
+            _output({
+                "action": action,
+                "selector": args.selector,
+                "output": args.output,
+                "size": len(data),
+            })
+            if args.open_file:
+                _open_file_if_display(os.path.abspath(args.output))
+
+        else:
+            _output({"error": f"未知 action: {action}", "valid_actions": [
+                "element-exists", "get-text", "get-attribute", "count",
+                "click", "evaluate", "screenshot",
+            ]}, exit_code=2)
+
+    finally:
+        browser.close()
+
+
 def cmd_check_risk(args: argparse.Namespace) -> None:
     """分析小红书风控状态：检测自动化特征与 API 拦截情况。"""
     import json as _json
@@ -881,6 +947,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # list-feeds
     sub = subparsers.add_parser("list-feeds", help="获取首页 Feed 列表")
+    sub.add_argument(
+        "--skip-navigate",
+        action="store_true",
+        help="当前页面已是 explore/home 时不刷新",
+    )
     sub.set_defaults(func=cmd_list_feeds)
 
     # search-feeds
@@ -1032,6 +1103,30 @@ def build_parser() -> argparse.ArgumentParser:
     # risk-report
     sub = subparsers.add_parser("risk-report", help="基于 NetLog 生成风控分析报告")
     sub.set_defaults(func=cmd_risk_report)
+
+    # debug-test
+    sub = subparsers.add_parser("debug-test", help="调试测试：元素查询、JS 执行、截图等")
+    sub.add_argument(
+        "--action",
+        required=True,
+        choices=[
+            "element-exists", "has-element",
+            "get-text",
+            "get-attribute",
+            "count",
+            "click",
+            "evaluate",
+            "screenshot",
+        ],
+        help="调试动作类型",
+    )
+    sub.add_argument("--selector", default="body", help="CSS 选择器 (default: body)")
+    sub.add_argument("--attr", help="属性名（get-attribute 时必填）")
+    sub.add_argument("--js", help="JS 表达式（evaluate 时必填）")
+    sub.add_argument("--output", help="截图输出路径（screenshot 时必填）")
+    sub.add_argument("--padding", type=int, default=0, help="截图 padding 像素")
+    sub.add_argument("--open-file", action="store_true", help="截图后用系统程序打开")
+    sub.set_defaults(func=cmd_debug_test)
 
     return parser
 

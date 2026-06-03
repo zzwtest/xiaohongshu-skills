@@ -9,7 +9,7 @@ import time
 from .cdp import Page
 from .errors import NoFeedsError
 from .types import Feed
-from .urls import HOME_URL
+from .urls import EXPLORE_URL, HOME_URL
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +30,30 @@ _EXTRACT_FEEDS_JS = """
 """
 
 
-def list_feeds(page: Page) -> list[Feed]:
+def list_feeds(page: Page, skip_navigate: bool = False) -> list[Feed]:
     """获取首页 Feed 列表。
+
+    Args:
+        page: CDP 页面对象。
+        skip_navigate: 若当前页面已是 explore/home 则不导航。
 
     Raises:
         NoFeedsError: 没有捕获到 feeds 数据。
     """
-    page.navigate(HOME_URL)
-    page.wait_for_load()
-    page.wait_dom_stable()
-    time.sleep(1)
+    navigated = True
+    
+    if skip_navigate:
+        current_url = (page.evaluate("location.href") or "").strip()
+        #print(current_url)
+        if current_url.startswith(EXPLORE_URL) or current_url.startswith(HOME_URL):
+            logger.info("当前已在 explore/home 页面，跳过导航: %s", current_url)
+            navigated = False
+    #return []
+    if navigated:
+        page.navigate(HOME_URL)
+        page.wait_for_load()
+        page.wait_dom_stable()
+        time.sleep(1)
 
     result = page.evaluate(_EXTRACT_FEEDS_JS)
     if not result:

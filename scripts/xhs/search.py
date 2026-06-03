@@ -173,10 +173,10 @@ def _apply_filters(page: Page, filters: list[tuple[int, str]]) -> None:
       for (const [groupIdx, text] of items) {{
         const group = wrapper.querySelectorAll('div.filters')[groupIdx - 1];
         if (!group) {{ reject('筛选组 ' + groupIdx + ' 不存在'); return; }}
-        const tag = Array.from(group.querySelectorAll('div.tags'))
+        const tag = Array.from(group.querySelectorAll('div.tags[data-hp-bound="1"]'))
           .find(el => el.textContent.trim() === text);
         if (!tag) {{ reject('选项不存在: ' + text); return; }}
-        tag.click();
+        tag.dispatchEvent(new MouseEvent('click', {{bubbles: true, cancelable: true}}));
       }}
 
       // 等待搜索结果刷新（feeds 快照变化）

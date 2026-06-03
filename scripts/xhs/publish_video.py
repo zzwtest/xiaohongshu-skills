@@ -18,7 +18,6 @@ from .publish import (
 )
 from .selectors import (
     FILE_INPUT,
-    PUBLISH_BUTTON,
     TITLE_INPUT,
     UPLOAD_INPUT,
 )
@@ -84,7 +83,7 @@ def click_publish_video_button(page: Page) -> None:
         page: CDP 页面对象。
     """
     _wait_for_publish_button_clickable(page)
-    page.click_element(PUBLISH_BUTTON)
+    page.evaluate("document.querySelector('xhs-publish-btn')._onPublish()")
     time.sleep(3)
     logger.info("视频发布完成")
 
@@ -112,19 +111,23 @@ def _wait_for_publish_button_clickable(page: Page) -> None:
 
     while time.monotonic() - start < max_wait:
         clickable = page.evaluate(
-            f"""
-            (() => {{
-                const btn = document.querySelector({_js_str(PUBLISH_BUTTON)});
+            """
+            (() => {
+                const btn = document.querySelector('xhs-publish-btn');
                 if (!btn) return false;
+
                 const rect = btn.getBoundingClientRect();
                 if (rect.width === 0 || rect.height === 0) return false;
-                if (btn.disabled) return false;
-                if (btn.classList.contains('disabled')) return false;
-                return true;
-            }})()
+
+                if (btn._props?.submitDisabled  == undefined ) return false;
+                if (btn._props?.submitDisabled  == true ) return false;
+                if (btn._props?.submitDisabled  == false ) return true;
+                return false;
+            })()
             """
         )
         if clickable:
+            time.sleep(0.3)
             return
         time.sleep(1)
 
@@ -164,10 +167,3 @@ def _fill_publish_video_form(
     _set_visibility(page, visibility)
 
     logger.info("视频表单填写完成，等待确认发布")
-
-
-def _js_str(s: str) -> str:
-    """将 Python 字符串转为 JS 字面量。"""
-    import json
-
-    return json.dumps(s)
