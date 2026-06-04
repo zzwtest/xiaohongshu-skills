@@ -73,6 +73,138 @@ _REPLY_COUNT_RE = re.compile(r"展开\s*(\d+)\s*条回复")
 _TOTAL_COMMENT_RE = re.compile(r"共(\d+)条评论")
 
 
+def _close_existing_note_detail(page: Page) -> None:
+    """关闭当前已打开的笔记弹层。"""
+    script = """
+    (() => {
+        const note = document.querySelector('#noteContainer');
+        if (!note) return false;
+
+        // 尝试找关闭按钮：X 按钮、close 类、关闭图标
+        const selectors = [
+            '.close-circle', '.close-mask', 'button[aria-label="关闭"]',
+            '.note-scroller .close', '[class*="close"]',
+        ];
+        for (const sel of selectors) {
+            const btn = document.querySelector(sel);
+            if (!btn) continue;
+            const rect = btn.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                ['mousedown', 'mouseup', 'click'].forEach(type => {
+                    btn.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true}));
+                });
+                return true;
+            }
+        }
+
+        // 兜底：点 ESC 键关闭
+        document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+        return true;
+    })()
+    """
+    closed = page.evaluate(script)
+    if closed:
+        logger.info("关闭已有笔记弹层，等待消失...")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if not page.has_element("#noteContainer"):
+                logger.info("弹层已关闭")
+                break
+            time.sleep(0.2)
+
+
+def get_feed_detail_by_current(
+    page: Page,
+    index: int = 0,
+    load_all_comments: bool = False,
+    config: CommentLoadConfig | None = None,
+) -> FeedDetailResponse:
+    """从当前页面（搜索/explore）点击链接打开笔记详情。
+
+    在当前页面查找笔记超链接，点击后在弹层中提取 feed_id，
+    再走 __INITIAL_STATE__ 提取流程。
+
+    Args:
+        page: CDP 页面对象。
+        index: 点击第几条笔记（0-based）。
+        load_all_comments: 是否加载全部评论。
+        config: 评论加载配置。
+
+    Raises:
+        ValueError: 未找到可点击的笔记链接。
+        NoFeedDetailError: 未获取到详情数据。
+    """
+    import re as _re
+
+    _FEED_LINK_RE = _re.compile(r"/(?:explore|search_result)/([a-f0-9]+)\?xsec_token=")
+    if config is None:
+        config = CommentLoadConfig()
+
+    # 先关闭已有弹层
+    _close_existing_note_detail(page)
+
+    script = f"""
+    (() => {{
+        const links = Array.from(document.querySelectorAll('a[target="_self"]'))
+            .filter(a => {{
+                const h = a.getAttribute('href') || '';
+                return /\\/(explore|search_result)\\/[a-f0-9]+\\?xsec_token=/.test(h);
+            }});
+        if (!links.length) return null;
+
+        const idx = {index};
+        if (idx >= links.length) return {{ error: '索引超出范围，共 ' + links.length + ' 条' }};
+
+        const link = links[idx];
+        const href = link.getAttribute('href');
+        const match = href.match(/\\/(?:explore|search_result)\\/([a-f0-9]+)\\?xsec_token=([^&]+)/);
+        const feedId = match ? match[1] : '';
+
+        // 点击链接
+        link.scrollIntoView({{ block: 'center' }});
+        ['mousedown', 'mouseup', 'click'].forEach(type => {{
+            link.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true }}));
+        }});
+
+        return {{ feedId: feedId, href: href, totalLinks: links.length }};
+    }})()
+    """
+
+    result = page.evaluate(script)
+    if not result:
+        raise ValueError("当前页面未找到可点击的笔记链接（需 a[target=\"_self\"] 且 href 含 explore/search_result）")
+
+    if isinstance(result, dict) and result.get("error"):
+        raise ValueError(result["error"])
+
+    feed_id = result.get("feedId", "") if isinstance(result, dict) else ""
+    if not feed_id:
+        raise ValueError("无法从链接中提取 feed_id")
+
+    logger.info("点击第 %d 条笔记，feed_id=%s，等待弹层加载...", index + 1, feed_id)
+
+    # 等待 noteContainer 出现
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if page.has_element("#noteContainer"):
+            break
+        time.sleep(0.3)
+    else:
+        logger.warning("noteContainer 未出现，尝试直接从 __INITIAL_STATE__ 提取")
+    logger.info(f"弹层加载... {feed_id}")
+    # 等待 __INITIAL_STATE__ 刷新
+    sleep_random(800, 1500)
+
+    # 加载全部评论
+    if load_all_comments:
+        try:
+            _load_all_comments(page, config)
+        except Exception as e:
+            logger.warning("加载全部评论失败: %s", e)
+
+    return _extract_feed_detail(page, feed_id)
+
+
 def get_feed_detail(
     page: Page,
     feed_id: str,
@@ -269,16 +401,24 @@ def _extract_feed_detail(page: Page, feed_id: str) -> FeedDetailResponse:
        Vue 渲染时序：state 早于 DOM，需分开轮询。
     """
     # 阶段 1：等待 __INITIAL_STATE__
-    deadline = time.monotonic() + 10.0
+    t0 = time.monotonic()
+    logger.info("阶段1: 等待 __INITIAL_STATE__ 就绪 (feed_id=%s)...", feed_id)
+    deadline = t0 + 10.0
     result = None
+    attempts = 0
     while time.monotonic() < deadline:
         result = page.evaluate(_EXTRACT_STATE_JS)
+        attempts += 1
         if result:
             break
         time.sleep(0.3)
 
+    t1 = time.monotonic()
     if not result:
+        logger.warning("阶段1 超时 (%.1fs, %d 次)", t1 - t0, attempts)
         raise NoFeedDetailError()
+
+    logger.info("阶段1 完成: %.1fs (%d 次轮询)", t1 - t0, attempts)
 
     note_detail_map = json.loads(result)
     note_data = note_detail_map.get(feed_id)
@@ -286,13 +426,30 @@ def _extract_feed_detail(page: Page, feed_id: str) -> FeedDetailResponse:
         raise NoFeedDetailError()
 
     # 阶段 2：等待 #detail-desc 渲染（Vue 异步渲染，state 就绪后 DOM 可能还未填充）
+    logger.info("阶段2: 等待 #detail-desc DOM 渲染...")
     dom_deadline = time.monotonic() + 8.0
     dom_result = None
+    dom_attempts = 0
     while time.monotonic() < dom_deadline:
         dom_result = page.evaluate(_EXTRACT_DOM_BODY_JS)
-        if dom_result and isinstance(dom_result, dict) and dom_result.get("body", "").strip():
-            break
+        dom_attempts += 1
+        if dom_result and isinstance(dom_result, dict):
+            if dom_result.get("body", "").strip() or dom_result.get("tags"):
+                break
         time.sleep(0.3)
+
+    t2 = time.monotonic()
+    dom_elapsed = t2 - t1
+    dom_ok = (
+        dom_result and isinstance(dom_result, dict) and
+        (dom_result.get("body", "").strip() or dom_result.get("tags"))
+    )
+    if dom_ok:
+        logger.info("阶段2 完成: %.1fs (%d 次轮询)", dom_elapsed, dom_attempts)
+    else:
+        logger.warning("阶段2 DOM 未填充 (%.1fs, %d 次)，使用已提取数据", dom_elapsed, dom_attempts)
+
+    logger.info("_extract_feed_detail 总耗时: %.1fs (阶段1=%.1fs, 阶段2=%.1fs)", t2 - t0, t1 - t0, dom_elapsed)
 
     note = note_data.get("note", {})
     if dom_result and isinstance(dom_result, dict):

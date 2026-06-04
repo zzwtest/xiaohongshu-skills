@@ -19,7 +19,13 @@ from .urls import make_feed_detail_url
 logger = logging.getLogger(__name__)
 
 
-def post_comment(page: Page, feed_id: str, xsec_token: str, content: str) -> None:
+def post_comment(
+    page: Page,
+    feed_id: str,
+    xsec_token: str,
+    content: str,
+    skip_navigate: bool = False,
+) -> None:
     """发表评论到 Feed。
 
     Args:
@@ -27,10 +33,43 @@ def post_comment(page: Page, feed_id: str, xsec_token: str, content: str) -> Non
         feed_id: Feed ID。
         xsec_token: xsec_token。
         content: 评论内容。
+        skip_navigate: 不导航，直接在当前页面发表（需已打开对应笔记弹层）。
 
     Raises:
         RuntimeError: 评论失败。
     """
+    if skip_navigate:
+        _verify_and_post_inline(page, feed_id, content)
+    else:
+        _navigate_and_post(page, feed_id, xsec_token, content)
+
+
+def _verify_and_post_inline(page: Page, feed_id: str, content: str) -> None:
+    """在当前页面验证 feed_id 并发表评论。"""
+    import json as _json
+
+    # 检查 location.href 是否包含 feed_id
+    check_js = f"""
+    (() => {{
+        const href = location.href;
+        if (href.includes({_json.dumps(feed_id)})) {{
+            return {{ ok: true, feedId: {_json.dumps(feed_id)}, href: href }};
+        }}
+        return {{ ok: false, reason: 'location.href 不包含 feed_id', href: href }};
+    }})()
+    """
+    result = page.evaluate(check_js)
+    if not result or not result.get("ok"):
+        href = result.get("href", "未知") if result else "未知"
+        raise RuntimeError(f"当前页面与目标 feed_id 不匹配: href={href}, feed_id={feed_id}")
+
+    logger.info("当前页面笔记已验证: feed_id=%s，开始发表评论", feed_id)
+    _fill_and_submit_comment(page, content)
+    logger.info("评论发送成功: feed=%s", feed_id)
+
+
+def _navigate_and_post(page: Page, feed_id: str, xsec_token: str, content: str) -> None:
+    """导航到详情页并发表评论。"""
     url = make_feed_detail_url(feed_id, xsec_token)
     logger.info("打开 feed 详情页: %s", url)
 
@@ -40,24 +79,24 @@ def post_comment(page: Page, feed_id: str, xsec_token: str, content: str) -> Non
     sleep_random(800, 1500)
 
     _check_page_accessible(page)
+    _fill_and_submit_comment(page, content)
+    logger.info("评论发送成功: feed=%s", feed_id)
 
-    # 点击评论输入触发区域
+
+def _fill_and_submit_comment(page: Page, content: str) -> None:
+    """填写并提交评论表单。"""
     if not page.has_element(COMMENT_INPUT_TRIGGER):
         raise RuntimeError("未找到评论输入框，该帖子可能不支持评论或网页端不可访问")
 
     page.click_element(COMMENT_INPUT_TRIGGER)
     sleep_random(400, 800)
 
-    # 输入评论内容（CDP 逐字输入）
     page.wait_for_element(COMMENT_INPUT_FIELD, timeout=5)
     page.input_content_editable(COMMENT_INPUT_FIELD, content)
     sleep_random(600, 1200)
 
-    # 点击提交
     page.click_element(COMMENT_SUBMIT_BUTTON)
     sleep_random(800, 1500)
-
-    logger.info("评论发送成功: feed=%s", feed_id)
 
 
 def reply_comment(

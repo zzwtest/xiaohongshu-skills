@@ -444,6 +444,31 @@ def cmd_get_feed_detail(args: argparse.Namespace) -> None:
         browser.close()
 
 
+def cmd_get_feed_detail_current(args: argparse.Namespace) -> None:
+    """从当前页面点击链接打开笔记详情。"""
+    from xhs.feed_detail import get_feed_detail_by_current
+    from xhs.types import CommentLoadConfig
+
+    config = CommentLoadConfig(
+        click_more_replies=args.click_more_replies,
+        max_replies_threshold=args.max_replies_threshold,
+        max_comment_items=args.max_comment_items,
+        scroll_speed=args.scroll_speed,
+    )
+
+    browser, page = _connect(args)
+    try:
+        detail = get_feed_detail_by_current(
+            page,
+            index=args.index,
+            load_all_comments=args.load_all_comments,
+            config=config,
+        )
+        _output(detail.to_dict())
+    finally:
+        browser.close()
+
+
 def cmd_user_profile(args: argparse.Namespace) -> None:
     """获取用户主页。"""
     from xhs.user_profile import get_user_profile
@@ -462,7 +487,13 @@ def cmd_post_comment(args: argparse.Namespace) -> None:
 
     browser, page = _connect(args)
     try:
-        post_comment(page, args.feed_id, args.xsec_token, args.content)
+        post_comment(
+            page,
+            args.feed_id,
+            args.xsec_token,
+            args.content,
+            skip_navigate=args.skip_navigate,
+        )
         _output({"success": True, "message": "评论发送成功"})
     finally:
         browser.close()
@@ -976,6 +1007,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument("--keyword", default="篮球", help="风控重试时的搜索关键词")
     sub.set_defaults(func=cmd_get_feed_detail)
 
+    # get-feed-detail-current
+    sub = subparsers.add_parser("get-feed-detail-current", help="从当前页面点击链接打开笔记详情")
+    sub.add_argument("--index", type=int, default=0, help="点击第几条（0-based）")
+    sub.add_argument("--load-all-comments", action="store_true", help="加载全部评论")
+    sub.add_argument("--max-comment-items", type=int, default=0)
+    sub.add_argument("--max-replies-threshold", type=int, default=10)
+    sub.add_argument("--click-more-replies", action="store_true", help="展开更多回复")
+    sub.add_argument("--scroll-speed", default="normal", help="slow|normal|fast")
+    sub.set_defaults(func=cmd_get_feed_detail_current)
+
     # user-profile
     sub = subparsers.add_parser("user-profile", help="获取用户主页")
     sub.add_argument("--user-id", required=True)
@@ -985,6 +1026,7 @@ def build_parser() -> argparse.ArgumentParser:
     # post-comment
     sub = subparsers.add_parser("post-comment", help="发表评论")
     sub.add_argument("--feed-id", required=True)
+    sub.add_argument("--skip-navigate", action="store_true", help="不导航，在当前页面弹层中评论")
     sub.add_argument("--xsec-token", required=True)
     sub.add_argument("--content", required=True)
     sub.set_defaults(func=cmd_post_comment)
