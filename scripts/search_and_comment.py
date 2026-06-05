@@ -19,6 +19,7 @@ if _parent and str(_parent) not in sys.path:
 
 import requests
 from xhs.bridge import BridgePage
+from xhs.comment import post_comment
 from xhs.feed_detail import get_feed_detail, get_feed_detail_by_current
 from xhs.search import search_feeds
 from xhs.types import CommentLoadConfig, FilterOption
@@ -63,12 +64,12 @@ def _call_ai(title: str, desc: str, cover_url: str, comments: list[dict]) -> dic
 {comment_texts if comment_texts else '（暂无评论）'}
 
 要求：
-- 评论要结合封面图片内容，体现出你看懂了图
+- 评论可以结合封面图片内容，体现出你看懂了图
 - 语言自然接地气，像真人写的，不要 AI 腔
-- 30-100 字
+- 5-30 字
 - 不要 emoji 堆砌
 - 只输出评论内容，不要引号、不要"评论："前缀"""
-
+    print(prompt)
     resp = requests.post(
         _AI_API_URL,
         headers={
@@ -82,7 +83,7 @@ def _call_ai(title: str, desc: str, cover_url: str, comments: list[dict]) -> dic
             ],
             "temperature": 0.7,
         },
-        timeout=30,
+        timeout=60,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -177,9 +178,9 @@ def main() -> None:
             "commentCount": len(comments_list),
         }
 
-        # 4. AI 推荐评论
+        # 4. AI 推荐评论 + 确认后自动评论
         if ai_recommend:
-            print("AI 生成推荐评论中 ...")
+            print("AI 生成推荐评论中 ...", file=sys.stderr)
             try:
                 ai_result = _call_ai(
                     detail.note.title,
@@ -187,7 +188,29 @@ def main() -> None:
                     cover_url,
                     comments_list,
                 )
-                output["aiRecommend"] = ai_result["recommendedComment"]
+                recommended = ai_result["recommendedComment"]
+                output["aiRecommend"] = recommended
+
+                print(f"\n{'='*50}", file=sys.stderr)
+                print(f"AI 推荐评论:\n  {recommended}", file=sys.stderr)
+                print(f"{'='*50}", file=sys.stderr)
+
+                choice = input("\n是否自动发表这条评论？(y/n): ").strip().lower()
+                if choice in ("y", "yes"):
+                    print("正在发表评论 ...", file=sys.stderr)
+                    post_comment(
+                        page,
+                        detail.note.note_id,
+                        first.xsec_token,
+                        recommended,
+                        skip_navigate=not use_navigate,
+                    )
+                    output["posted"] = True
+                    output["postedContent"] = recommended
+                    print("评论已发表", file=sys.stderr)
+                else:
+                    output["posted"] = False
+                    print("跳过评论", file=sys.stderr)
             except Exception as e:
                 output["aiRecommendError"] = str(e)
 
