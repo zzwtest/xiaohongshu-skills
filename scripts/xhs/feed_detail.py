@@ -116,6 +116,7 @@ def _close_existing_note_detail(page: Page) -> None:
 def get_feed_detail_by_current(
     page: Page,
     index: int = 0,
+    feed_id: str = "",
     load_all_comments: bool = False,
     config: CommentLoadConfig | None = None,
 ) -> FeedDetailResponse:
@@ -126,7 +127,8 @@ def get_feed_detail_by_current(
 
     Args:
         page: CDP 页面对象。
-        index: 点击第几条笔记（0-based）。
+        index: 点击第几条笔记（0-based），仅在未提供 feed_id 时使用。
+        feed_id: 目标笔记 Feed ID（优先，不受 DOM 滚动影响）。
         load_all_comments: 是否加载全部评论。
         config: 评论加载配置。
 
@@ -145,28 +147,58 @@ def get_feed_detail_by_current(
 
     script = f"""
     (() => {{
-        const links = Array.from(document.querySelectorAll('a[target="_self"]'))
-            .filter(a => {{
+        let target = null;
+        let href = '';
+        let totalLinks = 0;
+
+        const feedIdTarget = "{feed_id}";
+        if (feedIdTarget) {{
+            const targetId = feedIdTarget.split("|")[0];
+            const allLinks = Array.from(document.querySelectorAll('a[target="_self"]'));
+            totalLinks = allLinks.length;
+            for (const a of allLinks) {{
                 const h = a.getAttribute('href') || '';
-                return /\\/(explore|search_result)\\/[a-f0-9]+\\?xsec_token=/.test(h);
-            }});
-        if (!links.length) return null;
+                const m = h.match(/\\/(?:explore|search_result)\\/([a-f0-9]+)\\?xsec_token=/);
+                if (m && m[1] === targetId) {{
+                    target = a;
+                    href = h;
+                    break;
+                }}
+            }}
+            if (!target) return {{ error: '未找到 feedId=' + targetId + ' 的笔记链接' }};
+        }} else {{
+            const links = Array.from(document.querySelectorAll('a[target="_self"]'))
+                .filter(a => {{
+                    const h = a.getAttribute('href') || '';
+                    return /\\/(explore|search_result)\\/[a-f0-9]+\\?xsec_token=/.test(h);
+                }})
+                .reduce((acc, a) => {{
+                    const h = a.getAttribute('href');
+                    const match = h.match(/\\/(?:explore|search_result)\\/[a-f0-9]+\\?xsec_token=[^&]+/);
+                    const key = match ? match[0] : h;
+                    if (!acc.seen.has(key)) {{
+                        acc.seen.add(key);
+                        acc.links.push(a);
+                    }}
+                    return acc;
+                }}, {{ seen: new Set(), links: [] }}).links;
+            totalLinks = links.length;
+            if (!links.length) return null;
+            const idx = {index};
+            if (idx >= links.length) return {{ error: '索引超出范围，共 ' + links.length + ' 条' }};
+            target = links[idx];
+            href = target.getAttribute('href');
+        }}
 
-        const idx = {index};
-        if (idx >= links.length) return {{ error: '索引超出范围，共 ' + links.length + ' 条' }};
-
-        const link = links[idx];
-        const href = link.getAttribute('href');
         const match = href.match(/\\/(?:explore|search_result)\\/([a-f0-9]+)\\?xsec_token=([^&]+)/);
         const feedId = match ? match[1] : '';
 
-        // 点击链接
-        link.scrollIntoView({{ block: 'center' }});
+        target.scrollIntoView({{ block: 'center' }});
         ['mousedown', 'mouseup', 'click'].forEach(type => {{
-            link.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true }}));
+            target.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true }}));
         }});
 
-        return {{ feedId: feedId, href: href, totalLinks: links.length }};
+        return {{ feedId: feedId, href: href, totalLinks: totalLinks }};
     }})()
     """
 

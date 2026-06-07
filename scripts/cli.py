@@ -461,6 +461,7 @@ def cmd_get_feed_detail_current(args: argparse.Namespace) -> None:
         detail = get_feed_detail_by_current(
             page,
             index=args.index,
+            feed_id=args.feed_id or "",
             load_all_comments=args.load_all_comments,
             config=config,
         )
@@ -1009,7 +1010,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # get-feed-detail-current
     sub = subparsers.add_parser("get-feed-detail-current", help="从当前页面点击链接打开笔记详情")
-    sub.add_argument("--index", type=int, default=0, help="点击第几条（0-based）")
+    sub.add_argument("--index", type=int, default=0, help="点击第几条（0-based），未提供 feed-id 时使用")
+    sub.add_argument("--feed-id", default="", help="目标笔记 Feed ID（优先，不受滚动影响）")
     sub.add_argument("--load-all-comments", action="store_true", help="加载全部评论")
     sub.add_argument("--max-comment-items", type=int, default=0)
     sub.add_argument("--max-replies-threshold", type=int, default=10)
